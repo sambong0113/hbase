@@ -18,6 +18,8 @@
 
 package org.apache.hadoop.hbase.thrift;
 
+import static org.apache.hadoop.hbase.HConstants.DEFAULT_HBASE_CLIENT_SCANNER_TIMEOUT_PERIOD;
+import static org.apache.hadoop.hbase.HConstants.HBASE_CLIENT_SCANNER_TIMEOUT_PERIOD;
 import static org.apache.hadoop.hbase.util.Bytes.getBytes;
 
 import java.io.IOException;
@@ -45,6 +47,8 @@ import javax.security.sasl.AuthorizeCallback;
 import javax.security.sasl.Sasl;
 import javax.security.sasl.SaslServer;
 
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.Option;
 import org.apache.commons.cli.OptionGroup;
@@ -676,7 +680,7 @@ public class ThriftServerRunner implements Runnable {
 
     // nextScannerId and scannerMap are used to manage scanner state
     protected int nextScannerId = 0;
-    protected HashMap<Integer, ResultScannerWrapper> scannerMap = null;
+    protected Cache<Integer, ResultScannerWrapper> scannerMap = null;
     private ThriftMetrics metrics = null;
 
     private final ConnectionCache connectionCache;
@@ -740,7 +744,7 @@ public class ThriftServerRunner implements Runnable {
      * @return a Scanner, or null if ID was invalid.
      */
     protected synchronized ResultScannerWrapper getScanner(int id) {
-      return scannerMap.get(id);
+      return scannerMap.getIfPresent(id);
     }
 
     /**
@@ -748,16 +752,20 @@ public class ThriftServerRunner implements Runnable {
      * id-&gt;scanner hash-map.
      *
      * @param id
-     * @return a Scanner, or null if ID was invalid.
      */
-    protected synchronized ResultScannerWrapper removeScanner(int id) {
-      return scannerMap.remove(id);
+    protected synchronized void removeScanner(int id) {
+      scannerMap.invalidate(id);
     }
 
     protected HBaseHandler(final Configuration c,
         final UserProvider userProvider) throws IOException {
       this.conf = c;
-      scannerMap = new HashMap<Integer, ResultScannerWrapper>();
+      long cacheTimeout = c.getLong(HBASE_CLIENT_SCANNER_TIMEOUT_PERIOD, DEFAULT_HBASE_CLIENT_SCANNER_TIMEOUT_PERIOD) * 2;
+
+      scannerMap = CacheBuilder.newBuilder()
+              .expireAfterAccess(cacheTimeout, TimeUnit.MILLISECONDS)
+              .build();
+
       this.coalescer = new IncrementCoalescer(this);
 
       int cleanInterval = conf.getInt(CLEANUP_INTERVAL, 10 * 1000);
@@ -1452,6 +1460,10 @@ public class ThriftServerRunner implements Runnable {
       } catch (IOException e) {
         LOG.warn(e.getMessage(), e);
         throw new IOError(Throwables.getStackTraceAsString(e));
+      } finally {
+        // Add scanner back to scannerMap; protects against case
+        // where scanner expired during processing of request.
+        scannerMap.put(id, resultScannerWrapper);
       }
       return ThriftUtilities.rowResultFromHBase(results, resultScannerWrapper.isColumnSorted());
     }
