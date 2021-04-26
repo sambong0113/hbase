@@ -425,9 +425,6 @@ pipeline {
               label 'hbase'
             }
           }
-          when {
-            branch 'branch-1*'
-          }
           environment {
             BASEDIR = "${env.WORKSPACE}/component"
             TESTS = "${env.DEEP_CHECKS}"
@@ -509,9 +506,7 @@ pipeline {
             }
           }
           when {
-            not {
-              branch 'branch-1*'
-            }
+            anyOf { branch 'branch-1*'; branch 'branch-2*' }
           }
           environment {
             BASEDIR = "${env.WORKSPACE}/component"
